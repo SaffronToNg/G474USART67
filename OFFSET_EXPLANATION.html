@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>偏置在本项目中的意义与实现说明</title>
+  <style>
+    body {
+      font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+      line-height: 1.7;
+      margin: 0;
+      background: #f5f7fb;
+      color: #1f2937;
+    }
+    .container {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 32px 24px 80px;
+    }
+    h1, h2, h3 {
+      color: #0f172a;
+    }
+    h1 {
+      margin-top: 0;
+      font-size: 2rem;
+    }
+    h2 {
+      margin-top: 2rem;
+      padding-bottom: 0.35rem;
+      border-bottom: 2px solid #dbeafe;
+    }
+    .card {
+      background: #ffffff;
+      border-radius: 14px;
+      padding: 22px 24px;
+      margin: 18px 0;
+      box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+    }
+    code, pre {
+      font-family: Consolas, "Courier New", monospace;
+    }
+    pre {
+      background: #0f172a;
+      color: #e2e8f0;
+      padding: 14px 16px;
+      border-radius: 10px;
+      overflow-x: auto;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0 18px;
+      background: #fff;
+    }
+    th, td {
+      border: 1px solid #d1d5db;
+      padding: 10px 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: #eff6ff;
+    }
+    .ok {
+      color: #166534;
+      font-weight: 700;
+    }
+    .warn {
+      color: #92400e;
+      font-weight: 700;
+    }
+    .mono {
+      font-family: Consolas, "Courier New", monospace;
+    }
+    ul li, ol li {
+      margin: 6px 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>偏置在本项目中的意义与实现说明</h1>
+
+    <div class="card">
+      <p><strong>适用对象：</strong>当前 G474 迁移工程与原 F334 电源控制工程。</p>
+      <p><strong>目的：</strong>解释“为什么这个项目必须做偏置（offset）处理”、“偏置解决什么问题”、“原工程怎么做的”、“当前 G474 版本是如何最小恢复的”。</p>
+    </div>
+
+    <h2>1. 什么是偏置</h2>
+    <div class="card">
+      <p>在这个项目里，<strong>偏置（offset）</strong>主要针对的是电流相关采样通道：</p>
+      <ul>
+        <li><span class="mono">IL</span>：电感电流相关通道</li>
+        <li><span class="mono">IY</span>：Y 侧电流相关通道</li>
+        <li><span class="mono">IX</span>：X 侧电流相关通道</li>
+      </ul>
+      <p>这些通道并不是“零电流时 ADC 直接读 0”，而通常是通过模拟前端加了一个中点电压，使得：</p>
+      <ul>
+        <li>零电流时，ADC 原始值大约落在 12 位 ADC 中间附近，例如 <span class="mono">~2048</span></li>
+        <li>有正向/反向电流变化时，ADC 值围绕这个中点上下偏移</li>
+      </ul>
+      <p>所以 raw 值本身不等于“真实电流”，raw 值只是“中点偏置 + 真实信号”的组合。</p>
+    </div>
+
+    <h2>2. 为什么这个项目必须做偏置</h2>
+    <div class="card">
+      <p>如果不做偏置处理，后面所有依赖电流判断的逻辑都会有问题。</p>
+      <h3>2.1 不做偏置会发生什么</h3>
+      <ul>
+        <li>零电流时，程序会误以为一直有一个很大的“假电流”</li>
+        <li>小电流判断会漂移</li>
+        <li>过流保护门限会失真</li>
+        <li>控制环会带着直流偏差工作</li>
+        <li>模式切换（例如 BUCK / BOOST）时电流方向判断会不可靠</li>
+      </ul>
+      <h3>2.2 为什么不能直接假设 offset 固定等于 2048</h3>
+      <ul>
+        <li>运放有失调</li>
+        <li>电阻分压/采样网络有误差</li>
+        <li>ADC 本身有误差</li>
+        <li>PCB 与器件温漂会造成零点变化</li>
+      </ul>
+      <p>所以原工程的正确思路不是“写死一个中点值”，而是：<strong>上电后在静态条件下，实际测出每一路自己的零点</strong>。</p>
+    </div>
+
+    <h2>3. 偏置在原工程里是怎么做的</h2>
+    <div class="card">
+      <p>原工程在初始化状态阶段，会做一个非常关键的动作：</p>
+      <ol>
+        <li>连续累计 256 次电流通道 raw 值</li>
+        <li>分别求出 <span class="mono">IxOffset</span>、<span class="mono">IyOffset</span>、<span class="mono">ILOffset</span></li>
+        <li>后续采样时，用 <span class="mono">raw - offset</span> 得到去偏置值</li>
+      </ol>
+      <p>核心思想可以概括为：</p>
+      <pre>offset = 256 次静态采样的平均值
+zero_based = raw - offset</pre>
+      <p>这样做的结果是：</p>
+      <ul>
+        <li>静态无电流时，<span class="mono">zero_based ≈ 0</span></li>
+        <li>真正有电流变化时，<span class="mono">zero_based</span> 才偏离 0</li>
+      </ul>
+    </div>
+
+    <h2>4. 当前 G474 迁移版本是怎么实现的</h2>
+    <div class="card">
+      <p>当前 G474 版本里，我没有把原工程完整状态机直接搬过来，而是先恢复了“最小偏置框架”。</p>
+      <h3>4.1 当前恢复了哪些字段</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>字段</th>
+            <th>含义</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">OFFN</td><td>当前已经累计了多少次偏置样本</td></tr>
+          <tr><td class="mono">OFFRDY</td><td>偏置是否已经计算完成，0=未完成，1=完成</td></tr>
+          <tr><td class="mono">ILO</td><td>IL 通道 offset</td></tr>
+          <tr><td class="mono">IYO</td><td>IY 通道 offset</td></tr>
+          <tr><td class="mono">IXO</td><td>IX 通道 offset</td></tr>
+          <tr><td class="mono">ILZ</td><td>IL 去偏置结果（zero-based）</td></tr>
+          <tr><td class="mono">IYZ</td><td>IY 去偏置结果（zero-based）</td></tr>
+          <tr><td class="mono">IXZ</td><td>IX 去偏置结果（zero-based）</td></tr>
+        </tbody>
+      </table>
+
+      <h3>4.2 当前实现逻辑</h3>
+      <ol>
+        <li>每次主循环都执行语义更新与处理更新</li>
+        <li>如果偏置样本数还没到 256，就继续累计 <span class="mono">IL / IY / IX</span> raw 值</li>
+        <li>当样本数到 256 时，求平均值得到 offset</li>
+        <li>offset 就绪后，持续计算 <span class="mono">zero_based = raw - offset</span></li>
+      </ol>
+    </div>
+
+    <h2>5. 为什么现在看到的结果说明“偏置层通了”</h2>
+    <div class="card">
+      <p>你目前已经看到类似结果：</p>
+      <pre>OFFN=256 OFFRDY=1
+ILO=2041 IYO=2027 IXO=2023
+ILZ=-3~+2 IYZ=-1~+4 IXZ=-2~+4</pre>
+      <p>这组结果说明：</p>
+      <ul>
+        <li><span class="mono">OFFN=256</span>：偏置累积完整完成</li>
+        <li><span class="mono">OFFRDY=1</span>：偏置已经建立成功</li>
+        <li><span class="mono">ILO/IYO/IXO</span> 在 2000 附近：符合中点偏置通道特征</li>
+        <li><span class="mono">ILZ/IYZ/IXZ</span> 在 0 附近小幅波动：说明去偏置成功，零基准已建立</li>
+      </ul>
+      <p class="ok">因此可以判定：当前偏置初始化框架已打通。</p>
+    </div>
+
+    <h2>6. 为什么偏置阶段不能乱接 3.3V</h2>
+    <div class="card">
+      <p>在偏置学习阶段，<strong>不建议</strong>对 <span class="mono">IL / IY / IX</span> 这三路电流通道强行接 3.3V。</p>
+      <p>因为偏置学习的目标不是“验证某一路输入会不会变”，而是：</p>
+      <p class="mono">在无真实电流激励时，学到各电流通道自己的零点</p>
+      <p>如果你在这个阶段人为给这些通道施加强输入，学出来的 offset 就会偏掉，后面去偏置结果就不再可信。</p>
+      <p class="warn">正确做法：让系统保持静态、无真实电流激励，再完成 offset 学习。</p>
+    </div>
+
+    <h2>7. 偏置在原工程后续要用来做什么</h2>
+    <div class="card">
+      <p>偏置不是为了“看着好看”，而是后面很多逻辑的前提：</p>
+      <ul>
+        <li>电流方向判断</li>
+        <li>BUCK / BOOST 模式下的正负号转换</li>
+        <li>过流保护</li>
+        <li>短路检测</li>
+        <li>控制环电流反馈</li>
+      </ul>
+      <p>如果 offset 不准，那么这些逻辑全都会被带偏。</p>
+    </div>
+
+    <h2>8. 当前实现和原工程完整实现的差别</h2>
+    <div class="card">
+      <p>当前 G474 版本只恢复了“最小偏置框架”，还没有恢复完整行为。</p>
+      <table>
+        <thead>
+          <tr>
+            <th>项目</th>
+            <th>当前 G474 版本</th>
+            <th>原工程完整版本</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>偏置累积</td><td>已恢复</td><td>已具备</td></tr>
+          <tr><td>zero-based 去偏置</td><td>已恢复</td><td>已具备</td></tr>
+          <tr><td>BUCK/BOOST 方向翻转</td><td>未恢复</td><td>有</td></tr>
+          <tr><td>控制意义上的电流值</td><td>未恢复完整</td><td>有</td></tr>
+          <tr><td>状态机联动</td><td>未恢复</td><td>有</td></tr>
+          <tr><td>保护/控制环使用</td><td>未恢复</td><td>有</td></tr>
+        </tbody>
+      </table>
+      <p>也就是说，现在只是把“偏置底座”搭起来了，还没把“偏置参与业务逻辑”全部恢复。</p>
+    </div>
+
+    <h2>9. 当前阶段的通过标准</h2>
+    <div class="card">
+      <p>如果满足以下条件，就可以认为偏置阶段通过：</p>
+      <ul>
+        <li><span class="mono">OFFN=256</span></li>
+        <li><span class="mono">OFFRDY=1</span></li>
+        <li><span class="mono">ILO / IYO / IXO</span> 稳定</li>
+        <li><span class="mono">ILZ / IYZ / IXZ</span> 接近 0</li>
+        <li>串口、TIM、ADC、HRTIM 其它观测项仍稳定</li>
+      </ul>
+      <p class="ok">目前你的工程已经满足这些条件，因此可认为“偏置/初始化采样框架”已经打通。</p>
+    </div>
+
+    <h2>10. 下一步会做什么</h2>
+    <div class="card">
+      <p>偏置层打通后，后面更合理的方向通常是：</p>
+      <ol>
+        <li>恢复目标输入 / 标定层（例如 VADJ / IADJ 目标处理）</li>
+        <li>恢复模式相关采样处理</li>
+        <li>恢复状态机骨架</li>
+        <li>最后才接控制环和输出行为</li>
+      </ol>
+      <p class="warn">不建议现在直接跳去恢复 PWM 输出或闭环控制。</p>
+    </div>
+  </div>
+</body>
+</html>

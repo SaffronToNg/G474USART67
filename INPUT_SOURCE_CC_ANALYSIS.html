@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>输入源进入 CC 模式问题分析</title>
+  <style>
+    body {
+      font-family: "Microsoft YaHei", Arial, sans-serif;
+      line-height: 1.75;
+      margin: 0;
+      background: #f5f7fb;
+      color: #1f2937;
+    }
+    .wrap {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 32px 24px 72px;
+    }
+    h1, h2, h3 {
+      color: #0f172a;
+    }
+    h1 {
+      margin-top: 0;
+      font-size: 2rem;
+    }
+    h2 {
+      margin-top: 2rem;
+      padding-bottom: 0.35rem;
+      border-bottom: 2px solid #dbeafe;
+    }
+    .card {
+      background: #ffffff;
+      border-radius: 14px;
+      padding: 20px 22px;
+      margin: 16px 0;
+      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+    }
+    pre {
+      background: #111827;
+      color: #e5e7eb;
+      padding: 14px 16px;
+      border-radius: 10px;
+      overflow-x: auto;
+      font-family: Consolas, "Courier New", monospace;
+    }
+    code {
+      font-family: Consolas, "Courier New", monospace;
+    }
+    ul li, ol li {
+      margin: 6px 0;
+    }
+    .ok {
+      color: #065f46;
+      font-weight: 700;
+    }
+    .warn {
+      color: #92400e;
+      font-weight: 700;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0 18px;
+      background: #fff;
+    }
+    th, td {
+      border: 1px solid #d1d5db;
+      padding: 10px 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: #eff6ff;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>输入端电源进入 CC 模式问题分析</h1>
+
+    <div class="card">
+      <p><strong>问题现象：</strong></p>
+      <ul>
+        <li>输入电源设置为 24V。</li>
+        <li>当输出负载增大后，输入电流上升到某个值（例如 1.8A）时，输入电源从 <strong>CV 恒压</strong> 切换到 <strong>CC 恒流</strong>。</li>
+        <li>一旦输入源进入 CC，输入电压下降，Buck 输出端电压无法再调高，甚至掉下来。</li>
+        <li>你进一步测试发现：<strong>原工程在同样输入电源条件下也会出现这个问题</strong>。</li>
+      </ul>
+    </div>
+
+    <h2>1. 关键结论</h2>
+    <div class="card">
+      <p class="ok">既然原工程在同样输入源条件下也会出现这个现象，那么主因大概率不是“当前移植代码写坏了”，而是系统级功率边界问题。</p>
+      <p>更准确地说，这个问题更像是：</p>
+      <ul>
+        <li>输入电源本身有电流上限；</li>
+        <li>当前控制策略会持续尝试满足输出电压目标；</li>
+        <li>当负载要求的输入功率超过前级源能力时，输入源就切到 CC；</li>
+        <li>进入 CC 后，输入电压被拉低，Buck 输出端自然无法再维持原目标值。</li>
+      </ul>
+    </div>
+
+    <h2>2. 为什么输入源会从 CV 变成 CC</h2>
+    <div class="card">
+      <p>这不是 MCU 或控制板主动把前级源切成 CC，而是前级电源自己的保护动作。</p>
+      <p>假设输入源设置为：</p>
+      <pre>Vin = 24V
+Iin_limit = 1.8A</pre>
+      <p>那么它理论上最多能提供的输入功率就是：</p>
+      <pre>Pin_max = 24 × 1.8 = 43.2W</pre>
+      <p>如果再考虑 Buck 转换效率，真正能送到输出端的功率还会更低。</p>
+      <p>当负载要求的输出功率继续升高时，控制器会继续推占空比，前级源就会先达到极限，于是：</p>
+      <ol>
+        <li>输入电流到达限制值；</li>
+        <li>输入源从 CV 切到 CC；</li>
+        <li>输入电压开始下降；</li>
+        <li>Buck 可用输入功率变少；</li>
+        <li>输出电压上不去，甚至下跌。</li>
+      </ol>
+    </div>
+
+    <h2>3. 为什么“原工程也会这样”非常重要</h2>
+    <div class="card">
+      <p>这说明当前现象不能简单归咎于：</p>
+      <ul>
+        <li>移植代码有严重错误；</li>
+        <li>闭环主链完全失效；</li>
+        <li>PWM 逻辑完全错乱；</li>
+        <li>反馈通道完全错误。</li>
+      </ul>
+      <p>如果这些是主因，原工程不应该表现出同样问题。</p>
+      <p class="ok">因此当前最合理的判断是：问题主要属于系统级功率边界，而不是单纯软件逻辑失效。</p>
+    </div>
+
+    <h2>4. 当前控制策略为什么容易把前级源压进 CC</h2>
+    <div class="card">
+      <p>当前控制的主逻辑仍然是电压环优先：</p>
+      <pre>目标电压 VREF
+  - 反馈电压 LVY
+  = 误差 ERR
+  -> PI
+  -> 占空比增加
+  -> 继续索取更多输入功率</pre>
+      <p>这种逻辑在前级源能力充足时没问题，但在前级源限流较低时，会出现：</p>
+      <ul>
+        <li>输出达不到目标，控制器继续往上推；</li>
+        <li>输入电流越来越大；</li>
+        <li>最终前级源先被压进 CC；</li>
+        <li>输入压降后，输出反而更达不到目标。</li>
+      </ul>
+      <p class="warn">所以当前主问题不是“控制不会工作”，而是“控制没有输入功率边界意识”。</p>
+    </div>
+
+    <h2>5. 为什么这不完全等于“控制环设计错了”</h2>
+    <div class="card">
+      <p>这更像是控制策略层级不完整，而不是主控制环完全错。</p>
+      <ul>
+        <li>电压环主链是合理的；</li>
+        <li>输出目标能被调到，说明闭环并非失效；</li>
+        <li>但当前系统缺少对“输入源能力边界”的主动约束；</li>
+        <li>所以一带载，就会优先把前级源压到 CC。</li>
+      </ul>
+    </div>
+
+    <h2>6. 这和 OVP/保护是什么关系</h2>
+    <div class="card">
+      <p>OVP 的作用是：</p>
+      <ul>
+        <li>当输出已经冲高后，及时停机保护。</li>
+      </ul>
+      <p>但 OVP 不能解决：</p>
+      <ul>
+        <li>为什么输入源会更早进入 CC；</li>
+        <li>为什么系统在较大负载下索取过多输入功率。</li>
+      </ul>
+      <p class="warn">所以 OVP 是必要的兜底，但不是这个问题的根因解决方案。</p>
+    </div>
+
+    <h2>7. 当前最合理的原因排序</h2>
+    <div class="card">
+      <table>
+        <thead>
+          <tr>
+            <th>优先级</th>
+            <th>原因</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>1</td>
+            <td>输入源功率能力不够</td>
+            <td>一旦负载要求超出前级源能力，电源就会切到 CC。</td>
+          </tr>
+          <tr>
+            <td>2</td>
+            <td>当前控制策略只有电压环，没有输入功率/电流约束</td>
+            <td>电压达不到目标时，控制器会持续推占空比。</td>
+          </tr>
+          <tr>
+            <td>3</td>
+            <td>带载启动或调压时瞬时功率需求大</td>
+            <td>即使稳态能带，动态瞬时也可能先把输入源顶进 CC。</td>
+          </tr>
+          <tr>
+            <td>4</td>
+            <td>反馈量纲/参数仍可能存在偏差</td>
+            <td>会放大问题，但不是“原工程也这样”的主因。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>8. 为什么当前问题更像“系统功率边界”而不是“移植坏了”</h2>
+    <div class="card">
+      <p>因为你已经确认：</p>
+      <ul>
+        <li>原工程在同样输入源条件下也会出现这一现象；</li>
+        <li>说明硬件平台本身就存在一个“前级功率限制”边界；</li>
+        <li>当前移植版如果表现相似，说明它已经在复现原系统行为的一部分，而不一定是写错了。</li>
+      </ul>
+      <p class="ok">因此当前问题更像“原系统设计就需要额外约束输入功率边界”，而不是“当前代码坏了”。</p>
+    </div>
+
+    <h2>9. 不改代码时最有价值的验证</h2>
+    <div class="card">
+      <h3>实验 A：提高输入源限流</h3>
+      <ul>
+        <li>保持 24V 不变；</li>
+        <li>把限流从 1.8A 调高（如果电源允许）；</li>
+        <li>观察输出能力是否明显改善。</li>
+      </ul>
+      <p>如果改善明显，说明主因就是前级源能力瓶颈。</p>
+
+      <h3>实验 B：减轻输出负载</h3>
+      <ul>
+        <li>同样控制目标下，逐步减轻负载；</li>
+        <li>观察输出能否维持更高目标值。</li>
+      </ul>
+      <p>如果负载一减，输出就恢复，说明系统主要受功率边界限制。</p>
+    </div>
+
+    <h2>10. 如果以后改代码，最值得补的能力</h2>
+    <div class="card">
+      <ol>
+        <li><strong>电流/功率约束层</strong>：不要只靠电压环无限索取输入功率。</li>
+        <li><strong>最小 OCP/OVP/Err 骨架</strong>：出现异常时能够快速切断输出。</li>
+        <li><strong>更贴近原工程的控制节拍与输出刷新关系</strong>：改善动态和效率。</li>
+        <li><strong>反馈链与目标量纲进一步校准</strong>：让控制判断更准确。</li>
+      </ol>
+    </div>
+
+    <h2>11. 一句话总结</h2>
+    <div class="card">
+      <p class="ok">既然原工程在同样输入电源条件下也会让前级源进入 CC，那么当前问题的主因更像是“系统功率边界 + 电压环优先控制策略”，而不是简单的软件移植错误。</p>
+      <p>当前最合理的思路不是继续怀疑闭环主链，而是明确：<strong>前级源能力、负载条件、以及缺少输入功率/电流约束</strong>，才是导致输入源掉进 CC 的核心原因。</p>
+    </div>
+  </div>
+</body>
+</html>

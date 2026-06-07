@@ -1,0 +1,38 @@
+# Keil MDK build outputs
+MDK-ARM/*/
+!MDK-ARM/*.uvprojx
+!MDK-ARM/*.uvoptx
+!MDK-ARM/*.sct
+!MDK-ARM/*.bat
+!MDK-ARM/DebugConfig/
+
+# Object and dependency files
+*.o
+*.d
+*.dep
+*.axf
+*.bin
+*.elf
+*.hex
+*.map
+*.lst
+*.lib
+*.tmp
+*.log
+*.bak
+*.uvguix.*
+*.scvd
+
+# Git metadata if copied from elsewhere
+.git/
+
+# Common IDE / OS junk
+.vscode/
+.vs/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Python cache (if any helper scripts appear later)
+__pycache__/
+*.pyc
