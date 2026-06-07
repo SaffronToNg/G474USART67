@@ -1,5 +1,7 @@
 #include "target_calibration.h"
 
+#include "power_mode.h"
+
 volatile TargetCalibration_t g_target_calibration = {0};
 
 static int32_t ClampValue(int32_t value, int32_t min_value, int32_t max_value)
@@ -56,7 +58,17 @@ void TargetCalibration_UpdateInstant(void)
     vadj_target = 0;
   }
 
-  iadj_target = ((g_sample_processed.iadj_avg * 3072) >> 12) - 200;
+  if (PowerMode_GetActive() == POWER_MODE_BOOST)
+  {
+    iadj_target = ((g_sample_processed.iadj_avg * 1843) >> 12) - 200;
+    g_target_calibration.current_limit_mode = 2U;
+  }
+  else
+  {
+    iadj_target = ((g_sample_processed.iadj_avg * 3072) >> 12) - 200;
+    g_target_calibration.current_limit_mode = 1U;
+  }
+
   if (iadj_target < 0)
   {
     iadj_target = 0;
@@ -64,7 +76,6 @@ void TargetCalibration_UpdateInstant(void)
 
   g_target_calibration.vadj_target_instant = vadj_target;
   g_target_calibration.iadj_target_instant = iadj_target;
-  g_target_calibration.current_limit_mode = 1U; /* 当前最小恢复默认按 BUCK 上限路径观察 */
 }
 
 void TargetCalibration_UpdateStepped(void)
@@ -85,5 +96,5 @@ void TargetCalibration_UpdateStepped(void)
   g_target_calibration.iref_target = ClampValue(
       g_target_calibration.iref_target,
       TARGET_MIN_IREF,
-      TARGET_MAX_IREF_BUCK);
+      (PowerMode_GetActive() == POWER_MODE_BOOST) ? TARGET_MAX_IREF : TARGET_MAX_IREF_BUCK);
 }

@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 #include "main.h"
+#include "power_mode.h"
 #include "sample_processing.h"
 
 #define TARGET_MAX_VREF    3012

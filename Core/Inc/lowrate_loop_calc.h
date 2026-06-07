@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 #include "main.h"
+#include "power_mode.h"
 #include "minimal_state_machine.h"
 #include "target_calibration.h"
 

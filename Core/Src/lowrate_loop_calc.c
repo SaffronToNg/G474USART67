@@ -1,5 +1,7 @@
 #include "lowrate_loop_calc.h"
 
+#include "power_mode.h"
+
 volatile LowRateLoopCalc_t g_lowrate_loop_calc = {0};
 
 void LowRateLoopCalc_Reset(void)
@@ -47,7 +49,15 @@ void LowRateLoopCalc_Tick(void)
     return;
   }
 
-  g_lowrate_loop_calc.feedback_vy = g_target_calibration.vy_calibrated;
+  if (PowerMode_GetActive() == POWER_MODE_BOOST)
+  {
+    g_lowrate_loop_calc.feedback_vy = g_sample_processed.vx_raw;
+  }
+  else
+  {
+    g_lowrate_loop_calc.feedback_vy = g_target_calibration.vy_calibrated;
+  }
+
   g_lowrate_loop_calc.err =
       g_target_calibration.vref_target - g_lowrate_loop_calc.feedback_vy;
   g_lowrate_loop_calc.prop = g_lowrate_loop_calc.err * kp;

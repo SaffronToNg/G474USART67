@@ -3,6 +3,7 @@
 #include "LCDDriver.h"
 #include "lowrate_loop_calc.h"
 #include "minimal_state_machine.h"
+#include "power_mode.h"
 #include "sample_processing.h"
 #include "target_calibration.h"
 
@@ -189,7 +190,14 @@ static void TftDebugView_DrawMainLabels(void)
 
 static void TftDebugView_DrawModeValue(uint16_t x, uint16_t y)
 {
-  TftDebugView_DrawText(x, y, "BUCK ", GREEN, BLACK);
+  if (PowerMode_GetActive() == POWER_MODE_BOOST)
+  {
+    TftDebugView_DrawText(x, y, "BOOST", BLUE, BLACK);
+  }
+  else
+  {
+    TftDebugView_DrawText(x, y, "BUCK ", GREEN, BLACK);
+  }
 }
 
 static void TftDebugView_DrawStateCompact(uint16_t x, uint16_t y)

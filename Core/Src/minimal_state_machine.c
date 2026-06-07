@@ -1,6 +1,7 @@
 #include "minimal_state_machine.h"
 #include "hrtim.h"
 #include "lowrate_loop_calc.h"
+#include "power_mode.h"
 
 #define RISE_MIN_DUTY 100
 #define RISE_MAX_DUTY 30767
@@ -162,6 +163,8 @@ volatile MinimalStateMachine_t g_minimal_state_machine = {
     0U,
     0U,
     0U,
+    0U,
+    POWER_MODE_BUCK,
     0U};
 
 void MinimalStateMachine_Init(void)
@@ -190,6 +193,9 @@ void MinimalStateMachine_Init(void)
   g_minimal_state_machine.ta2_output_enabled = 0U;
   g_minimal_state_machine.loop_control_enable = 0U;
   g_minimal_state_machine.q1_closed_loop_enable = 0U;
+  g_minimal_state_machine.selected_mode = POWER_MODE_BUCK;
+  g_minimal_state_machine.mode_confirmed = 0U;
+  PowerMode_Reset();
   MinimalStateMachine_UpdateIndicators();
 }
 
@@ -218,15 +224,29 @@ void MinimalStateMachine_Tick5ms(void)
     g_minimal_state_machine.vref_snapshot = g_target_calibration.vref_target;
     g_minimal_state_machine.iref_snapshot = g_target_calibration.iref_target;
 
-    if ((g_minimal_state_machine.wait_counter >= 100U) &&
-        (HAL_GPIO_ReadPin(KEY1_GPIO_Port, KEY1_Pin) == GPIO_PIN_RESET))
+    if (g_minimal_state_machine.wait_counter >= 100U)
     {
-      g_minimal_state_machine.output_enabled_request = 1U;
+      if (HAL_GPIO_ReadPin(KEY1_GPIO_Port, KEY1_Pin) == GPIO_PIN_RESET)
+      {
+        PowerMode_Request(POWER_MODE_BUCK);
+        g_minimal_state_machine.selected_mode = POWER_MODE_BUCK;
+        g_minimal_state_machine.mode_confirmed = 1U;
+        g_minimal_state_machine.output_enabled_request = 1U;
+      }
+      else if (HAL_GPIO_ReadPin(KEY2_GPIO_Port, KEY2_Pin) == GPIO_PIN_RESET)
+      {
+        PowerMode_Request(POWER_MODE_BOOST);
+        g_minimal_state_machine.selected_mode = POWER_MODE_BOOST;
+        g_minimal_state_machine.mode_confirmed = 1U;
+        g_minimal_state_machine.output_enabled_request = 1U;
+      }
     }
 
     if ((g_minimal_state_machine.offset_capture_complete != 0U) &&
-        (g_minimal_state_machine.output_enabled_request != 0U))
+        (g_minimal_state_machine.output_enabled_request != 0U) &&
+        (g_minimal_state_machine.mode_confirmed != 0U))
     {
+      PowerMode_Lock();
       g_minimal_state_machine.rise_stage = 0U;
       g_minimal_state_machine.state = STATE_RISE;
     }
@@ -259,53 +279,22 @@ void MinimalStateMachine_Tick5ms(void)
     }
     else if (g_minimal_state_machine.rise_stage == 1U)
     {
-      if (g_minimal_state_machine.pwm_enable_request == 0U)
+      if (PowerMode_GetActive() == POWER_MODE_BOOST)
       {
-        g_minimal_state_machine.pwm_enable_request = 1U;
-        g_minimal_state_machine.q1_handover_ready = 1U;
-      }
-
-      if ((g_minimal_state_machine.q1_handover_ready != 0U) &&
-          (g_minimal_state_machine.ta1_output_enabled == 0U))
-      {
-        if (HAL_HRTIM_WaveformOutputStart(&hhrtim1, HRTIM_OUTPUT_TA1) == HAL_OK)
+        if (g_minimal_state_machine.pwm_enable_request == 0U)
         {
-          g_minimal_state_machine.ta1_output_enabled = 1U;
-        }
-      }
-
-      if (g_minimal_state_machine.rise_q1_max_duty < RISE_MAX_DUTY)
-      {
-        g_minimal_state_machine.rise_q1_counter++;
-        g_minimal_state_machine.rise_q1_max_duty =
-            (int32_t)g_minimal_state_machine.rise_q1_counter * RISE_DUTY_STEP;
-
-        if (g_minimal_state_machine.rise_q1_max_duty > RISE_MAX_DUTY)
-        {
-          g_minimal_state_machine.rise_q1_max_duty = RISE_MAX_DUTY;
+          g_minimal_state_machine.pwm_enable_request = 1U;
           g_minimal_state_machine.q2_handover_ready = 1U;
         }
 
-        g_minimal_state_machine.rise_q1_duty = g_minimal_state_machine.rise_q1_max_duty;
-        MinimalStateMachine_ApplyTa1Duty();
-      }
-      else if ((g_minimal_state_machine.q2_handover_ready != 0U) &&
-               (g_minimal_state_machine.ta2_output_enabled == 0U))
-      {
-        if (HAL_HRTIM_WaveformOutputStart(&hhrtim1, HRTIM_OUTPUT_TA2) == HAL_OK)
+        if ((g_minimal_state_machine.q2_handover_ready != 0U) &&
+            (g_minimal_state_machine.ta2_output_enabled == 0U))
         {
-          g_minimal_state_machine.ta2_output_enabled = 1U;
+          if (HAL_HRTIM_WaveformOutputStart(&hhrtim1, HRTIM_OUTPUT_TA2) == HAL_OK)
+          {
+            g_minimal_state_machine.ta2_output_enabled = 1U;
+          }
         }
-      }
-      else if (g_minimal_state_machine.ta2_output_enabled != 0U)
-      {
-        g_minimal_state_machine.rise_q2_duty = 32767 - g_minimal_state_machine.rise_q1_applied_duty;
-        if (g_minimal_state_machine.rise_q2_duty > g_minimal_state_machine.rise_q2_max_duty)
-        {
-          g_minimal_state_machine.rise_q2_duty = g_minimal_state_machine.rise_q2_max_duty;
-        }
-
-        MinimalStateMachine_ApplyTa2Window();
 
         if (g_minimal_state_machine.rise_q2_max_duty < RISE_MAX_DUTY)
         {
@@ -316,15 +305,118 @@ void MinimalStateMachine_Tick5ms(void)
           if (g_minimal_state_machine.rise_q2_max_duty > RISE_MAX_DUTY)
           {
             g_minimal_state_machine.rise_q2_max_duty = RISE_MAX_DUTY;
+            g_minimal_state_machine.q1_handover_ready = 1U;
           }
         }
-        else
+        else if ((g_minimal_state_machine.q1_handover_ready != 0U) &&
+                 (g_minimal_state_machine.ta1_output_enabled == 0U))
         {
-          g_minimal_state_machine.rise_stage = 2U;
-          LowRateLoopCalc_SeedFromDuty(g_minimal_state_machine.rise_q1_applied_duty);
-          g_minimal_state_machine.loop_control_enable = 1U;
-          g_minimal_state_machine.q1_closed_loop_enable = 1U;
-          g_minimal_state_machine.state = STATE_RUN;
+          if (HAL_HRTIM_WaveformOutputStart(&hhrtim1, HRTIM_OUTPUT_TA1) == HAL_OK)
+          {
+            g_minimal_state_machine.ta1_output_enabled = 1U;
+          }
+        }
+        else if (g_minimal_state_machine.ta1_output_enabled != 0U)
+        {
+          g_minimal_state_machine.rise_q1_duty = 32767 - g_minimal_state_machine.rise_q2_applied_duty;
+          if (g_minimal_state_machine.rise_q1_duty > g_minimal_state_machine.rise_q1_max_duty)
+          {
+            g_minimal_state_machine.rise_q1_duty = g_minimal_state_machine.rise_q1_max_duty;
+          }
+
+          MinimalStateMachine_ApplyTa2Window();
+          MinimalStateMachine_ApplyTa1Duty();
+
+          if (g_minimal_state_machine.rise_q1_max_duty < RISE_MAX_DUTY)
+          {
+            g_minimal_state_machine.rise_q1_counter++;
+            g_minimal_state_machine.rise_q1_max_duty =
+                (int32_t)g_minimal_state_machine.rise_q1_counter * RISE_DUTY_STEP;
+
+            if (g_minimal_state_machine.rise_q1_max_duty > RISE_MAX_DUTY)
+            {
+              g_minimal_state_machine.rise_q1_max_duty = RISE_MAX_DUTY;
+            }
+          }
+          else
+          {
+            g_minimal_state_machine.rise_stage = 2U;
+            LowRateLoopCalc_SeedFromDuty(g_minimal_state_machine.rise_q2_applied_duty);
+            g_minimal_state_machine.loop_control_enable = 1U;
+            g_minimal_state_machine.q1_closed_loop_enable = 1U;
+            g_minimal_state_machine.state = STATE_RUN;
+          }
+        }
+      }
+      else
+      {
+        if (g_minimal_state_machine.pwm_enable_request == 0U)
+        {
+          g_minimal_state_machine.pwm_enable_request = 1U;
+          g_minimal_state_machine.q1_handover_ready = 1U;
+        }
+
+        if ((g_minimal_state_machine.q1_handover_ready != 0U) &&
+            (g_minimal_state_machine.ta1_output_enabled == 0U))
+        {
+          if (HAL_HRTIM_WaveformOutputStart(&hhrtim1, HRTIM_OUTPUT_TA1) == HAL_OK)
+          {
+            g_minimal_state_machine.ta1_output_enabled = 1U;
+          }
+        }
+
+        if (g_minimal_state_machine.rise_q1_max_duty < RISE_MAX_DUTY)
+        {
+          g_minimal_state_machine.rise_q1_counter++;
+          g_minimal_state_machine.rise_q1_max_duty =
+              (int32_t)g_minimal_state_machine.rise_q1_counter * RISE_DUTY_STEP;
+
+          if (g_minimal_state_machine.rise_q1_max_duty > RISE_MAX_DUTY)
+          {
+            g_minimal_state_machine.rise_q1_max_duty = RISE_MAX_DUTY;
+            g_minimal_state_machine.q2_handover_ready = 1U;
+          }
+
+          g_minimal_state_machine.rise_q1_duty = g_minimal_state_machine.rise_q1_max_duty;
+          MinimalStateMachine_ApplyTa1Duty();
+        }
+        else if ((g_minimal_state_machine.q2_handover_ready != 0U) &&
+                 (g_minimal_state_machine.ta2_output_enabled == 0U))
+        {
+          if (HAL_HRTIM_WaveformOutputStart(&hhrtim1, HRTIM_OUTPUT_TA2) == HAL_OK)
+          {
+            g_minimal_state_machine.ta2_output_enabled = 1U;
+          }
+        }
+        else if (g_minimal_state_machine.ta2_output_enabled != 0U)
+        {
+          g_minimal_state_machine.rise_q2_duty = 32767 - g_minimal_state_machine.rise_q1_applied_duty;
+          if (g_minimal_state_machine.rise_q2_duty > g_minimal_state_machine.rise_q2_max_duty)
+          {
+            g_minimal_state_machine.rise_q2_duty = g_minimal_state_machine.rise_q2_max_duty;
+          }
+
+          MinimalStateMachine_ApplyTa2Window();
+
+          if (g_minimal_state_machine.rise_q2_max_duty < RISE_MAX_DUTY)
+          {
+            g_minimal_state_machine.rise_q2_counter++;
+            g_minimal_state_machine.rise_q2_max_duty =
+                (int32_t)g_minimal_state_machine.rise_q2_counter * RISE_DUTY_STEP;
+
+            if (g_minimal_state_machine.rise_q2_max_duty > RISE_MAX_DUTY)
+            {
+              g_minimal_state_machine.rise_q2_max_duty = RISE_MAX_DUTY;
+            }
+          }
+          else
+          {
+            g_minimal_state_machine.rise_stage = 2U;
+            LowRateLoopCalc_SeedFromDuty(g_minimal_state_machine.rise_q1_applied_duty);
+            g_minimal_state_machine.loop_control_enable = 1U;
+            g_minimal_state_machine.q1_closed_loop_enable = 1U;
+            g_minimal_state_machine.state = STATE_RUN;
+          }
         }
       }
     }
@@ -342,12 +434,50 @@ void MinimalStateMachine_Tick5ms(void)
 void MinimalStateMachine_RunControlTick(void)
 {
   int32_t q1_clamped;
-  int32_t q2_candidate;
+  int32_t q2_clamped;
 
   if ((g_minimal_state_machine.state != STATE_RUN) ||
       (g_minimal_state_machine.loop_control_enable == 0U) ||
       (g_minimal_state_machine.q1_closed_loop_enable == 0U))
   {
+    return;
+  }
+
+  if (PowerMode_GetActive() == POWER_MODE_BOOST)
+  {
+    q2_clamped = g_lowrate_loop_calc.q2_duty_cmd;
+    if (q2_clamped < RISE_MIN_DUTY)
+    {
+      q2_clamped = RISE_MIN_DUTY;
+    }
+    if (q2_clamped > g_minimal_state_machine.rise_q2_max_duty)
+    {
+      q2_clamped = g_minimal_state_machine.rise_q2_max_duty;
+    }
+    if (q2_clamped > RISE_MAX_DUTY)
+    {
+      q2_clamped = RISE_MAX_DUTY;
+    }
+
+    g_minimal_state_machine.rise_q2_duty = q2_clamped;
+    MinimalStateMachine_ApplyTa2Window();
+
+    q1_clamped = 32767 - g_minimal_state_machine.rise_q2_applied_duty;
+    if (q1_clamped < RISE_MIN_DUTY)
+    {
+      q1_clamped = RISE_MIN_DUTY;
+    }
+    if (q1_clamped > g_minimal_state_machine.rise_q1_max_duty)
+    {
+      q1_clamped = g_minimal_state_machine.rise_q1_max_duty;
+    }
+    if (q1_clamped > TA1_SAFE_MAX_DUTY_Q15)
+    {
+      q1_clamped = TA1_SAFE_MAX_DUTY_Q15;
+    }
+
+    g_minimal_state_machine.rise_q1_duty = q1_clamped;
+    MinimalStateMachine_ApplyTa1Duty();
     return;
   }
 
@@ -364,17 +494,17 @@ void MinimalStateMachine_RunControlTick(void)
   g_minimal_state_machine.rise_q1_duty = q1_clamped;
   MinimalStateMachine_ApplyTa1Duty();
 
-  q2_candidate = 32767 - g_minimal_state_machine.rise_q1_applied_duty;
-  if (q2_candidate < RISE_MIN_DUTY)
+  q2_clamped = 32767 - g_minimal_state_machine.rise_q1_applied_duty;
+  if (q2_clamped < RISE_MIN_DUTY)
   {
-    q2_candidate = RISE_MIN_DUTY;
+    q2_clamped = RISE_MIN_DUTY;
   }
-  if (q2_candidate > g_minimal_state_machine.rise_q2_max_duty)
+  if (q2_clamped > g_minimal_state_machine.rise_q2_max_duty)
   {
-    q2_candidate = g_minimal_state_machine.rise_q2_max_duty;
+    q2_clamped = g_minimal_state_machine.rise_q2_max_duty;
   }
 
-  g_minimal_state_machine.rise_q2_duty = q2_candidate;
+  g_minimal_state_machine.rise_q2_duty = q2_clamped;
   MinimalStateMachine_ApplyTa2Window();
 }
 

@@ -452,6 +452,11 @@
               <FilePath>../Core/Src/sample_processing.c</FilePath>
             </File>
             <File>
+              <FileName>power_mode.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/Src/power_mode.c</FilePath>
+            </File>
+            <File>
               <FileName>target_calibration.c</FileName>
               <FileType>1</FileType>
               <FilePath>../Core/Src/target_calibration.c</FilePath>

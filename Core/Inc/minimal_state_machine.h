@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 #include "main.h"
+#include "power_mode.h"
 #include "sample_processing.h"
 #include "target_calibration.h"
 
@@ -44,6 +45,8 @@ typedef struct
   uint8_t ta2_output_enabled;
   uint8_t loop_control_enable;
   uint8_t q1_closed_loop_enable;
+  PowerMode_t selected_mode;
+  uint8_t mode_confirmed;
 } MinimalStateMachine_t;
 
 extern volatile MinimalStateMachine_t g_minimal_state_machine;

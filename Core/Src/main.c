@@ -30,6 +30,7 @@
 #include "gpio.h"
 #include "sample_semantics.h"
 #include "sample_processing.h"
+#include "power_mode.h"
 #include "target_calibration.h"
 #include "minimal_state_machine.h"
 #include "lowrate_loop_calc.h"
@@ -264,7 +265,8 @@ int main(void)
 
       tx_len = snprintf(tx_message,
                         sizeof(tx_message),
-                        "V%ld,%ld,%ld,%ld,%ld,RX=%lu,ER=%lu,LB=%c,VA=%ld,VI=%ld,PF=%u,PV=%ld\r\n",
+                        "M=%u,V%ld,%ld,%ld,%ld,%ld,RX=%lu,ER=%lu,LB=%c,VA=%ld,VI=%ld,PF=%u,PV=%ld\r\n",
+                        (unsigned int)PowerMode_GetActive(),
                         (long)g_sample_processed.vx_avg,
                         (long)g_sample_processed.ix_avg,
                         (long)g_sample_processed.vy_avg,
